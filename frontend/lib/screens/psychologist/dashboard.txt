@@ -1,0 +1,924 @@
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import '../../utils/api_config.dart';
+import 'package:intl/intl.dart';
+
+class PsychologistDashboardScreen extends StatefulWidget {
+  final String token;
+  final int userId;
+
+  const PsychologistDashboardScreen({super.key, required this.token, required this.userId});
+
+  @override
+  State<PsychologistDashboardScreen> createState() => _PsychologistDashboardScreenState();
+}
+
+class _PsychologistDashboardScreenState extends State<PsychologistDashboardScreen> with SingleTickerProviderStateMixin {
+  List patients = [];
+  List appointments = [];
+  bool isLoading = false;
+  String? error;
+
+  // Pour le formulaire de rendez-vous
+  int? selectedPatientId;
+  DateTime? selectedDate;
+  TimeOfDay? selectedTime;
+  final descriptionController = TextEditingController();
+  final durationController = TextEditingController(text: '60');
+
+  // Pour la recherche et l’assignation de patients existants
+  final searchController = TextEditingController();
+  List allPatients = [];
+  List filteredPatients = [];
+  bool isLoadingAllPatients = false;
+
+  late TabController _tabController;
+
+  // variables pour le chat
+  List conversations = [];
+  List chatMessages = [];
+  int? selectedConversationId;
+  String? selectedPatientName;
+  final chatController = TextEditingController();
+  bool isLoadingChat = false;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchPatients();
+    fetchAppointments();
+    fetchAllPatients();
+    fetchConversations();
+    searchController.addListener(() {
+      filterPatients(searchController.text);
+    });
+    _tabController = TabController(length: 3, vsync: this);
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    searchController.dispose();
+    descriptionController.dispose();
+    durationController.dispose();
+    chatController.dispose();
+    super.dispose();
+  }
+
+  Future<void> fetchPatients() async {
+    setState(() { isLoading = true; error = null; });
+    final url = Uri.parse('${ApiConfig.baseUrl}/psychologist/patients');
+    final response = await http.get(
+      url,
+      headers: {'Authorization': 'Bearer ${widget.token}'},
+    );
+    if (response.statusCode == 200) {
+      setState(() {
+        patients = json.decode(response.body)['patients'];
+      });
+    } else {
+      setState(() {
+        try {
+          final data = json.decode(response.body);
+          error = data['error'] ?? "Erreur lors du chargement des patients";
+        } catch (e) {
+          error = "Erreur lors du chargement des patients (${response.statusCode}) : ${response.body}";
+        }
+      });
+    }
+    setState(() { isLoading = false; });
+  }
+
+  Future<void> fetchAllPatients() async {
+    setState(() { isLoadingAllPatients = true; });
+    final url = Uri.parse('${ApiConfig.baseUrl}/psychologist/search-patients?q=');
+    final response = await http.get(
+      url,
+      headers: {'Authorization': 'Bearer ${widget.token}'},
+    );
+    if (response.statusCode == 200) {
+      setState(() {
+        allPatients = json.decode(response.body)['patients'];
+        filteredPatients = allPatients;
+      });
+    } else {
+      setState(() {
+        allPatients = [];
+        filteredPatients = [];
+      });
+    }
+    setState(() { isLoadingAllPatients = false; });
+  }
+
+  void filterPatients(String query) {
+    setState(() {
+      filteredPatients = allPatients.where((patient) {
+        final name = (patient['name'] ?? '').toLowerCase();
+        final email = (patient['email'] ?? '').toLowerCase();
+        return name.contains(query.toLowerCase()) || email.contains(query.toLowerCase());
+      }).toList();
+    });
+  }
+
+  Future<void> fetchAppointments() async {
+    setState(() { isLoading = true; error = null; });
+    final url = Uri.parse('${ApiConfig.baseUrl}/appointments');
+    final response = await http.get(
+      url,
+      headers: {'Authorization': 'Bearer ${widget.token}'},
+    );
+    if (response.statusCode == 200) {
+      setState(() {
+        appointments = json.decode(response.body)['appointments'];
+      });
+    } else {
+      setState(() {
+        error = "Erreur lors du chargement des rendez-vous";
+      });
+    }
+    setState(() { isLoading = false; });
+  }
+
+  Future<void> assignExistingPatient(int patientId) async {
+    setState(() { isLoading = true; });
+    final url = Uri.parse('${ApiConfig.baseUrl}/psychologist/patients');
+    final response = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer ${widget.token}',
+        'Content-Type': 'application/json'
+      },
+      body: json.encode({'id': patientId}),
+    );
+    if (response.statusCode == 200) {
+      // Création automatique du chat
+      final convUrl = Uri.parse('${ApiConfig.baseUrl}/chat/conversations');
+      final chatResponse = await http.post(
+        convUrl,
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json'
+        },
+        body: json.encode({
+          'patient_id': patientId
+        }),
+      );
+      await fetchPatients();
+      await fetchAllPatients();
+      await fetchConversations();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Patient assigné avec succès et chat créé !')),
+      );
+    }
+    setState(() { isLoading = false; });
+  }
+
+  Future<void> deleteAssignedPatient(int patientId) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Confirmation'),
+        content: Text('Voulez-vous vraiment supprimer ce patient de votre liste ?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text('Annuler')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: Text('Supprimer')),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      setState(() { isLoading = true; });
+      final url = Uri.parse('${ApiConfig.baseUrl}/psychologist/patient/$patientId');
+      final response = await http.delete(
+        url,
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (response.statusCode == 200) {
+        await fetchPatients();
+        await fetchAllPatients();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Patient supprimé de votre liste.')),
+        );
+      }
+      setState(() { isLoading = false; });
+    }
+  }
+
+  Future<void> addAppointment() async {
+    if (selectedPatientId == null || selectedDate == null || selectedTime == null) {
+      setState(() { error = "Veuillez remplir tous les champs du rendez-vous."; });
+      return;
+    }
+    setState(() { isLoading = true; error = null; });
+    final url = Uri.parse('${ApiConfig.baseUrl}/appointments');
+    final dateTime = DateTime(
+      selectedDate!.year,
+      selectedDate!.month,
+      selectedDate!.day,
+      selectedTime!.hour,
+      selectedTime!.minute,
+    );
+    final response = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer ${widget.token}',
+        'Content-Type': 'application/json'
+      },
+      body: json.encode({
+        'patient_id': selectedPatientId,
+        'datetime': dateTime.toIso8601String(),
+        'duration': int.tryParse(durationController.text) ?? 60,
+        'notes': descriptionController.text,
+      }),
+    );
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      descriptionController.clear();
+      durationController.text = '60';
+      selectedPatientId = null;
+      selectedDate = null;
+      selectedTime = null;
+      await fetchAppointments();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Rendez-vous ajouté !')),
+      );
+    } else {
+      setState(() {
+        error = "Erreur lors de l'ajout du rendez-vous";
+      });
+    }
+    setState(() { isLoading = false; });
+  }
+
+  // Fonction pour annuler un rendez-vous
+  Future<void> cancelAppointment(int appointmentId) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Confirmation'),
+        content: Text('Voulez-vous vraiment annuler ce rendez-vous ?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text('Annuler')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: Text('Confirmer')),
+        ],
+      ),
+    );
+    if (confirmed == true) {
+      setState(() { isLoading = true; });
+      final url = Uri.parse('${ApiConfig.baseUrl}/appointments/$appointmentId');
+      final response = await http.put(
+        url,
+        headers: {
+          'Authorization': 'Bearer ${widget.token}',
+          'Content-Type': 'application/json'
+        },
+        body: json.encode({'status': 'cancelled'}),
+      );
+      if (response.statusCode == 200) {
+        await fetchAppointments();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Rendez-vous annulé.')),
+        );
+      }
+      setState(() { isLoading = false; });
+    }
+  }
+
+  // Fonction pour modifier un rendez-vous
+  Future<void> editAppointmentDialog(Map appt) async {
+    final patient = patients.firstWhere(
+      (p) => p['id'] == appt['patient_id'],
+      orElse: () => null,
+    );
+    final name = patient != null ? patient['name'] : 'Patient inconnu';
+    final notesController = TextEditingController(text: appt['notes'] ?? '');
+    final durationEditController = TextEditingController(text: (appt['duration'] ?? 60).toString());
+    DateTime? editDate = DateTime.tryParse(appt['datetime']);
+    TimeOfDay? editTime = editDate != null ? TimeOfDay(hour: editDate.hour, minute: editDate.minute) : null;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Modifier le rendez-vous'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Patient : $name'),
+              SizedBox(height: 8),
+              TextField(
+                controller: notesController,
+                decoration: InputDecoration(labelText: 'Description'),
+              ),
+              SizedBox(height: 8),
+              TextField(
+                controller: durationEditController,
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(labelText: 'Durée (minutes)'),
+              ),
+              SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(editDate == null
+                        ? 'Date non choisie'
+                        : '${editDate!.day}/${editDate!.month}/${editDate!.year}'),
+                  ),
+                  TextButton(
+                    onPressed: () async {
+                      final date = await showDatePicker(
+                        context: ctx,
+                        initialDate: editDate ?? DateTime.now(),
+                        firstDate: DateTime.now(),
+                        lastDate: DateTime.now().add(Duration(days: 365)),
+                      );
+                      if (date != null) {
+                        editDate = DateTime(
+                          date.year,
+                          date.month,
+                          date.day,
+                          editDate?.hour ?? 0,
+                          editDate?.minute ?? 0,
+                        );
+                        (ctx as Element).markNeedsBuild();
+                      }
+                    },
+                    child: Text('Choisir la date'),
+                  ),
+                ],
+              ),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(editTime == null
+                        ? 'Heure non choisie'
+                        : '${editTime!.format(ctx)}'),
+                  ),
+                  TextButton(
+                    onPressed: () async {
+                      final time = await showTimePicker(
+                        context: ctx,
+                        initialTime: editTime ?? TimeOfDay.now(),
+                      );
+                      if (time != null) {
+                        editTime = time;
+                        if (editDate != null) {
+                          editDate = DateTime(
+                            editDate!.year,
+                            editDate!.month,
+                            editDate!.day,
+                            time.hour,
+                            time.minute,
+                          );
+                        }
+                        (ctx as Element).markNeedsBuild();
+                      }
+                    },
+                    child: Text('Choisir l\'heure'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text('Annuler')),
+          ElevatedButton(
+            onPressed: () async {
+              setState(() { isLoading = true; });
+              final url = Uri.parse('${ApiConfig.baseUrl}/appointments/${appt['id']}');
+              final response = await http.put(
+                url,
+                headers: {
+                  'Authorization': 'Bearer ${widget.token}',
+                  'Content-Type': 'application/json'
+                },
+                body: json.encode({
+                  'datetime': editDate?.toIso8601String() ?? appt['datetime'],
+                  'duration': int.tryParse(durationEditController.text) ?? 60,
+                  'notes': notesController.text,
+                }),
+              );
+              if (response.statusCode == 200) {
+                await fetchAppointments();
+                Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text('Rendez-vous modifié.')),
+                );
+              }
+              setState(() { isLoading = false; });
+            },
+            child: Text('Enregistrer'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  // Fonction pour afficher les détails d'un rendez-vous
+  void showAppointmentDetails(Map appt) {
+    final patient = patients.firstWhere(
+      (p) => p['id'] == appt['patient_id'],
+      orElse: () => null,
+    );
+    final patientName = patient != null ? patient['name'] : 'Patient inconnu';
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Détail du rendez-vous'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Patient : $patientName'),
+            Text('Date : ${appt['datetime']}'),
+            Text('Durée : ${appt['duration'] ?? 60} min'),
+            Text('Description : ${appt['notes'] ?? ''}'),
+            Text('Statut : ${appt['status'] ?? ''}'),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: Text('Fermer')),
+        ],
+      ),
+    );
+  }
+
+  Future<void> pickDate() async {
+    final date = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(Duration(days: 365)),
+    );
+    if (date != null) setState(() => selectedDate = date);
+  }
+
+  Future<void> pickTime() async {
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
+    if (time != null) setState(() => selectedTime = time);
+  }
+
+  // Fonction pour récupérer les conversations
+  Future<void> fetchConversations() async {
+    setState(() { isLoadingChat = true; });
+    final url = Uri.parse('${ApiConfig.baseUrl}/chat/conversations');
+    final response = await http.get(
+      url,
+      headers: {'Authorization': 'Bearer ${widget.token}'},
+    );
+    if (response.statusCode == 200) {
+      setState(() {
+        conversations = json.decode(response.body)['conversations'];
+      });
+    } else {
+      setState(() {
+        conversations = [];
+      });
+    }
+    setState(() { isLoadingChat = false; });
+  }
+
+  // Fonction pour récupérer les messages d'une conversation
+  Future<void> fetchMessages(int conversationId, String patientName) async {
+    setState(() {
+      isLoadingChat = true;
+      selectedConversationId = conversationId;
+      selectedPatientName = patientName;
+      chatMessages = [];
+    });
+    final url = Uri.parse('${ApiConfig.baseUrl}/chat/messages/$conversationId');
+    final response = await http.get(
+      url,
+      headers: {'Authorization': 'Bearer ${widget.token}'},
+    );
+    if (response.statusCode == 200) {
+      setState(() {
+        chatMessages = json.decode(response.body)['messages'];
+      });
+    } else {
+      setState(() {
+        chatMessages = [];
+      });
+    }
+    setState(() { isLoadingChat = false; });
+  }
+
+  // Fonction pour envoyer un message
+  Future<void> sendMessage() async {
+    if (selectedConversationId == null || chatController.text.trim().isEmpty) return;
+    setState(() { isLoadingChat = true; });
+    final url = Uri.parse('${ApiConfig.baseUrl}/chat/messages');
+    final response = await http.post(
+      url,
+      headers: {
+        'Authorization': 'Bearer ${widget.token}',
+        'Content-Type': 'application/json'
+      },
+      body: json.encode({
+        'conversation_id': selectedConversationId,
+        'content': chatController.text.trim(),
+      }),
+    );
+    if (response.statusCode == 200) {
+      chatController.clear();
+      await fetchMessages(selectedConversationId!, selectedPatientName ?? '');
+    }
+    setState(() { isLoadingChat = false; });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Dashboard Psychologue'),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: [
+            Tab(icon: Icon(Icons.people), text: "Patients"),
+            Tab(icon: Icon(Icons.event), text: "Rendez-vous"),
+            Tab(icon: Icon(Icons.chat), text: "Chat"),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabController,
+        children: [
+          // Tab 1: Patients
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text("Mes patients", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                if (error != null) Text(error!, style: TextStyle(color: Colors.red)),
+                patients.isEmpty
+                    ? Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Text('Aucun patient assigné.', style: TextStyle(color: Colors.grey)),
+                      )
+                    : Expanded(
+                        child: ListView(
+                          children: patients.map<Widget>((patient) => Card(
+                            margin: EdgeInsets.symmetric(vertical: 4),
+                            child: ListTile(
+                              leading: CircleAvatar(
+                                child: Text(
+                                  (patient['name'] ?? '?').isNotEmpty
+                                      ? patient['name'][0].toUpperCase()
+                                      : '?',
+                                ),
+                              ),
+                              title: Text(patient['name']),
+                              subtitle: Text(patient['email']),
+                              trailing: IconButton(
+                                icon: Icon(Icons.delete, color: Colors.red),
+                                onPressed: isLoading
+                                    ? null
+                                    : () => deleteAssignedPatient(patient['id']),
+                              ),
+                            ),
+                          )).toList(),
+                        ),
+                      ),
+                Divider(height: 32),
+                Text("Assigner un patient existant", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                SizedBox(height: 8),
+                TextField(
+                  controller: searchController,
+                  decoration: InputDecoration(
+                    labelText: 'Recherche par nom ou email',
+                    prefixIcon: Icon(Icons.search),
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                SizedBox(height: 8),
+                if (isLoadingAllPatients)
+                  Center(child: CircularProgressIndicator()),
+                if (!isLoadingAllPatients && filteredPatients.isEmpty)
+                  Text('Aucun patient trouvé.', style: TextStyle(color: Colors.grey)),
+                if (!isLoadingAllPatients && filteredPatients.isNotEmpty)
+                  Expanded(
+                    child: ListView(
+                      children: filteredPatients.map<Widget>((patient) => Card(
+                        margin: EdgeInsets.symmetric(vertical: 4),
+                        child: ListTile(
+                          leading: CircleAvatar(
+                            child: Text(
+                              (patient['name'] ?? '?').isNotEmpty
+                                  ? patient['name'][0].toUpperCase()
+                                  : '?',
+                            ),
+                          ),
+                          title: Text(patient['name']),
+                          subtitle: Text(patient['email']),
+                          trailing: ElevatedButton(
+                            onPressed: isLoading ? null : () => assignExistingPatient(patient['id']),
+                            child: Text('Assigner'),
+                          ),
+                        ),
+                      )).toList(),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          // Tab 2: Rendez-vous
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: ListView(
+              children: [
+                Text('Mes rendez-vous', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                appointments.isEmpty
+                  ? Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text('Aucun rendez-vous.', style: TextStyle(color: Colors.grey)),
+                    )
+                  : Column(
+                      children: appointments.map((appt) {
+                        final patient = patients.firstWhere(
+                          (p) => p['id'] == appt['patient_id'],
+                          orElse: () => null,
+                        );
+                        final patientName = patient != null ? patient['name'] : 'Patient inconnu';
+                        return Card(
+                          margin: EdgeInsets.symmetric(vertical: 4),
+                          child: ListTile(
+                            title: Text('Avec: $patientName'),
+                            subtitle: Text('${appt['datetime']} - ${appt['notes'] ?? ''}'),
+                            onTap: () => showAppointmentDetails(appt),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: Icon(Icons.edit, color: Colors.blue),
+                                  onPressed: isLoading ? null : () => editAppointmentDialog(appt),
+                                  tooltip: 'Modifier',
+                                ),
+                                IconButton(
+                                  icon: Icon(Icons.cancel, color: Colors.red),
+                                  onPressed: isLoading ? null : () => cancelAppointment(appt['id']),
+                                  tooltip: 'Annuler',
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                Divider(height: 32),
+                Text('Ajouter un rendez-vous', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                DropdownButtonFormField<int>(
+                  value: selectedPatientId,
+                  items: patients.map<DropdownMenuItem<int>>((patient) {
+                    return DropdownMenuItem<int>(
+                      value: patient['id'],
+                      child: Text(patient['name']),
+                    );
+                  }).toList(),
+                  onChanged: (value) => setState(() => selectedPatientId = value),
+                  decoration: InputDecoration(labelText: 'Patient', border: OutlineInputBorder()),
+                ),
+                SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(selectedDate == null
+                          ? 'Date non choisie'
+                          : '${selectedDate!.day}/${selectedDate!.month}/${selectedDate!.year}'),
+                    ),
+                    TextButton(
+                      onPressed: pickDate,
+                      child: Text('Choisir la date'),
+                    ),
+                  ],
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(selectedTime == null
+                          ? 'Heure non choisie'
+                          : '${selectedTime!.format(context)}'),
+                    ),
+                    TextButton(
+                      onPressed: pickTime,
+                      child: Text('Choisir l\'heure'),
+                    ),
+                  ],
+                ),
+                TextField(
+                  controller: descriptionController,
+                  decoration: InputDecoration(labelText: 'Description', border: OutlineInputBorder()),
+                ),
+                SizedBox(height: 8),
+                TextField(
+                  controller: durationController,
+                  keyboardType: TextInputType.number,
+                  decoration: InputDecoration(labelText: 'Durée (minutes)', border: OutlineInputBorder()),
+                ),
+                SizedBox(height: 8),
+                ElevatedButton(
+                  onPressed: isLoading ? null : addAppointment,
+                  child: Text('Ajouter le rendez-vous'),
+                ),
+              ],
+            ),
+          ),
+          // Tab 3: Chat
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final bool inChat = selectedConversationId != null;
+                final double leftPanelWidth = inChat ? 80 : 260;
+
+                return Row(
+                  children: [
+                    AnimatedContainer(
+                      duration: Duration(milliseconds: 300),
+                      width: leftPanelWidth,
+                      decoration: BoxDecoration(
+                        color: Colors.grey[100],
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.grey[300]!),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          if (!inChat)
+                            Padding(
+                              padding: const EdgeInsets.all(12),
+                              child: Text('Conversations', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                            ),
+                          Expanded(
+                            child: isLoadingChat
+                                ? Center(child: CircularProgressIndicator())
+                                : ListView(
+                                    children: conversations.map<Widget>((conv) {
+                                      final patient = patients.firstWhere(
+                                        (p) => p['id'] == conv['patient_id'],
+                                        orElse: () => null,
+                                      );
+                                      final patientName = patient != null ? patient['name'] : 'Patient ${conv['patient_id']}';
+                                      final unread = conv['unread_count'] ?? 0;
+                                      return ListTile(
+                                        dense: inChat,
+                                        contentPadding: EdgeInsets.symmetric(horizontal: inChat ? 8 : 16, vertical: inChat ? 2 : 8),
+                                        selected: selectedConversationId == conv['id'],
+                                        leading: CircleAvatar(
+                                          radius: inChat ? 18 : 22,
+                                          child: Text(patientName.isNotEmpty ? patientName[0].toUpperCase() : '?'),
+                                        ),
+                                        title: inChat
+                                            ? null
+                                            : Text(patientName, style: TextStyle(fontWeight: FontWeight.w500)),
+                                        subtitle: (!inChat && conv['last_message'] != null)
+                                            ? Text(conv['last_message']['content'] ?? '', maxLines: 1, overflow: TextOverflow.ellipsis)
+                                            : null,
+                                        trailing: unread > 0
+                                            ? CircleAvatar(
+                                                radius: 12,
+                                                backgroundColor: Colors.red,
+                                                child: Text('$unread', style: TextStyle(color: Colors.white, fontSize: 12)),
+                                              )
+                                            : null,
+                                        onTap: () => fetchMessages(conv['id'], patientName),
+                                      );
+                                    }).toList(),
+                                  ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    VerticalDivider(width: 32),
+                    // Zone de chat
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.grey[300]!),
+                        ),
+                        child: selectedConversationId == null
+                            ? Center(child: Text('Sélectionnez une conversation à gauche.', style: TextStyle(fontSize: 18, color: Colors.grey[600])))
+                            : Column(
+                                crossAxisAlignment: CrossAxisAlignment.stretch,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(Icons.chat_bubble_outline, color: Colors.blue),
+                                      SizedBox(width: 8),
+                                      Text(
+                                        'Chat avec $selectedPatientName',
+                                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+                                      ),
+                                    ],
+                                  ),
+                                  Divider(height: 24),
+                                  Expanded(
+                                    child: isLoadingChat
+                                        ? Center(child: CircularProgressIndicator())
+                                        : Container(
+                                            padding: const EdgeInsets.symmetric(vertical: 8),
+                                            child: ListView.builder(
+                                              reverse: true,
+                                              itemCount: chatMessages.length,
+                                              itemBuilder: (context, index) {
+                                                final msg = chatMessages[chatMessages.length - 1 - index];
+                                                final isMe = msg['sender_id'] == widget.userId;
+                                                return Align(
+                                                  alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                                                  child: Container(
+                                                    constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.55),
+                                                    margin: EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+                                                    padding: EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                                                    decoration: BoxDecoration(
+                                                      color: isMe ? Colors.blue[400] : Colors.grey[200],
+                                                      borderRadius: BorderRadius.only(
+                                                        topLeft: Radius.circular(16),
+                                                        topRight: Radius.circular(16),
+                                                        bottomLeft: Radius.circular(isMe ? 16 : 0),
+                                                        bottomRight: Radius.circular(isMe ? 0 : 16),
+                                                      ),
+                                                      boxShadow: [
+                                                        BoxShadow(
+                                                          color: Colors.black12,
+                                                          blurRadius: 2,
+                                                          offset: Offset(0, 1),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                    child: Column(
+                                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                                      children: [
+                                                        Text(
+                                                          msg['content'],
+                                                          style: TextStyle(
+                                                            fontSize: 16,
+                                                            color: isMe ? Colors.white : Colors.black87,
+                                                          ),
+                                                        ),
+                                                        SizedBox(height: 4),
+                                                        Align(
+                                                          alignment: Alignment.bottomRight,
+                                                          child: Text(
+                                                            msg['sent_at'] != null
+                                                                ? DateFormat('HH:mm').format(DateTime.parse(msg['sent_at']))
+                                                                : '',
+                                                            style: TextStyle(
+                                                              fontSize: 11,
+                                                              color: isMe ? Colors.white70 : Colors.grey[600],
+                                                            ),
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                );
+                                              },
+                                            ),
+                                          ),
+                                  ),
+                                  SizedBox(height: 8),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: TextField(
+                                          controller: chatController,
+                                          decoration: InputDecoration(
+                                            hintText: 'Votre message...',
+                                            border: OutlineInputBorder(
+                                              borderRadius: BorderRadius.circular(24),
+                                            ),
+                                            contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                                          ),
+                                          onSubmitted: (_) => sendMessage(),
+                                        ),
+                                      ),
+                                      SizedBox(width: 8),
+                                      CircleAvatar(
+                                        backgroundColor: Colors.blue,
+                                        child: IconButton(
+                                          icon: Icon(Icons.send, color: Colors.white),
+                                          onPressed: isLoadingChat ? null : sendMessage,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}

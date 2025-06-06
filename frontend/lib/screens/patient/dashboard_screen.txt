@@ -1,0 +1,98 @@
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import '../../utils/api_config.dart';
+
+class PatientDashboardScreen extends StatefulWidget {
+  final String token;
+  final int userId;
+  const PatientDashboardScreen({super.key, required this.token, required this.userId});
+
+  @override
+  State<PatientDashboardScreen> createState() => _PatientDashboardScreenState();
+}
+
+class _PatientDashboardScreenState extends State<PatientDashboardScreen> {
+  Map? patient;
+  Map? psychologist;
+  bool isLoading = false;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchProfile();
+  }
+
+  Future<void> fetchProfile() async {
+    setState(() { isLoading = true; error = null; });
+    try {
+      // Récupérer le profil du patient
+      final profileRes = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/patient/profile'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (profileRes.statusCode == 200) {
+        patient = json.decode(profileRes.body)['patient'];
+      } else {
+        setState(() {
+          error = "Erreur lors du chargement du profil";
+          isLoading = false;
+        });
+        return;
+      }
+
+      // Récupérer le psychologue assigné
+      final psyRes = await http.get(
+        Uri.parse('${ApiConfig.baseUrl}/patient/psychologist'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (psyRes.statusCode == 200) {
+        psychologist = json.decode(psyRes.body)['psychologist'];
+      } else {
+        psychologist = null;
+      }
+    } catch (e) {
+      setState(() { error = "Erreur réseau"; });
+    }
+    setState(() { isLoading = false; });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Dashboard Patient')),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: isLoading
+            ? Center(child: CircularProgressIndicator())
+            : error != null
+                ? Center(child: Text(error!, style: TextStyle(color: Colors.red)))
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Mon profil', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                      SizedBox(height: 8),
+                      if (patient != null) ...[
+                        Text('Nom : ${patient!['name']}'),
+                        Text('Email : ${patient!['email']}'),
+                      ],
+                      SizedBox(height: 24),
+                      Text('Mon psychologue', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                      SizedBox(height: 8),
+                      if (psychologist != null)
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('Nom : ${psychologist!['name']}'),
+                            Text('Email : ${psychologist!['email']}'),
+                          ],
+                        )
+                      else
+                        Text('Aucun psychologue assigné.'),
+                    ],
+                  ),
+      ),
+    );
+  }
+}
